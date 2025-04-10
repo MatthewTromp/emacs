@@ -1390,6 +1390,10 @@ While in the fringe it is set as part of the `flymake-mode-map'."
                (format "<%s> <mouse-1>" flymake-fringe-indicator-position)
                #'flymake-show-buffer-diagnostics-at-event-line)
 
+(defvar-local flymake-current-diagnostic-line 0
+  "The line of the most recently focused diagnostic in the flymake
+diagnostics buffer.")
+
 ;;;###autoload
 (define-minor-mode flymake-mode
   "Toggle Flymake mode on or off.
@@ -1881,7 +1885,8 @@ specified."
 (defun flymake-show-diagnostic (pos &optional other-window)
   "Show location of diagnostic at POS."
   (interactive (list (point) t))
-  (let* ((id (or (tabulated-list-get-id pos)
+  (let* ((diagnostics-buffer (current-buffer))
+         (id (or (tabulated-list-get-id pos)
                  (user-error "Nothing at point")))
          (diag (plist-get id :diagnostic))
          (locus (flymake--diag-locus diag))
@@ -1890,6 +1895,7 @@ specified."
          (visit (lambda (b e)
                   (goto-char b)
                   (flymake-pulse-momentary-highlight-region b e))))
+    (setq flymake-current-diagnostic-line (line-number-at-pos pos))
     (with-current-buffer (cond ((bufferp locus) locus)
                                (t (find-file-noselect locus)))
       (with-selected-window
@@ -1905,6 +1911,8 @@ specified."
                                                  (car beg)
                                                  (cdr beg))))
                  (funcall visit bbeg bend)))))
+      (setq next-error-buffer diagnostics-buffer
+            next-error-last-buffer diagnostics-buffer)
       (current-buffer))))
 
 (defun flymake-goto-diagnostic (pos)
@@ -2008,6 +2016,23 @@ buffer."
     ("Backend" 8 t)
     ("Message" 0 t)])
 
+(defun flymake--diagnostics-next-error (n &optional reset)
+  "`next-error-function' for flymake diagnostics buffers.
+N is an integer representing how many errors to move.
+If RESET is non-nil, returns to the beginning of the errors before
+moving."
+  (let ((line (if reset 1 flymake-current-diagnostic-line))
+        (total-lines (count-lines (point-min) (point-max))))
+    (goto-char (point-min))
+    (unless (zerop total-lines)
+      (let ((target-line (+ line n)))
+        (setq target-line (max 1 target-line))
+        (setq target-line (min target-line total-lines))
+        (forward-line (1- target-line))))
+    (when-let ((win (get-buffer-window nil t)))
+      (set-window-point win (point)))
+    (flymake-goto-diagnostic (point))))
+
 (define-derived-mode flymake-diagnostics-buffer-mode tabulated-list-mode
   "Flymake diagnostics"
   "A mode for listing Flymake diagnostics."
@@ -2015,6 +2040,9 @@ buffer."
   (setq tabulated-list-format flymake--diagnostics-base-tabulated-list-format)
   (setq tabulated-list-entries
         'flymake--diagnostics-buffer-entries)
+
+  (setq-local next-error-function #'flymake--diagnostics-next-error)
+
   (tabulated-list-init-header))
 
 (defun flymake--diagnostics-buffer-name ()
@@ -2036,6 +2064,7 @@ buffer."
                        (current-buffer)))))
     (with-current-buffer target
       (setq flymake--diagnostics-buffer-source source)
+      (setq next-error-last-buffer (current-buffer))
       (revert-buffer)
       (display-buffer (current-buffer)
                       `((display-buffer-reuse-window
@@ -2085,6 +2114,9 @@ some of this variable's contents the diagnostic listings.")
   (setq tabulated-list-format
         (vconcat [("File" 25 t)]
                  flymake--diagnostics-base-tabulated-list-format))
+
+  (setq-local next-error-function #'flymake--diagnostics-next-error)
+
   (setq tabulated-list-entries
         'flymake--project-diagnostics-entries)
   (tabulated-list-init-header))
@@ -2149,6 +2181,7 @@ some of this variable's contents the diagnostic listings.")
     (with-current-buffer buffer
       (flymake-project-diagnostics-mode)
       (setq-local flymake--project-diagnostic-list-project prj)
+      (setq next-error-last-buffer (current-buffer))
       (revert-buffer)
       (display-buffer (current-buffer)
                       `((display-buffer-reuse-window
